@@ -83,5 +83,41 @@ class AgentsTest(unittest.TestCase):
         self.assertNotIn("Edit", tools)
 
 
+COMMAND = ".claude/commands/company.md"
+
+
+class CompanyCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.text = read(COMMAND)
+
+    def test_frontmatter(self):
+        self.assertTrue(frontmatter(COMMAND).get("description"))
+
+    def test_resume(self):
+        self.assertIn("company/state.md", self.text)
+        self.assertIn("続き", self.text)
+
+    def test_phases(self):
+        for phase in ["interview", "proposal", "spec", "spec_review", "build",
+                      "review", "owner_review", "done", "cancelled"]:
+            self.assertIn(phase, self.text)
+
+    def test_criteria(self):
+        for word in ["毎日または毎週", "困りごと", "1〜2週間", "2〜3案"]:
+            self.assertIn(word, self.text)
+
+    def test_checkpoints(self):
+        for word in ["確認ポイント①", "確認ポイント②", "確認ポイント③", "返事を待つ"]:
+            self.assertIn(word, self.text)
+
+    def test_rejection_and_loop(self):
+        for word in ["不採用", "同じ案を再提案しない", "最大3回"]:
+            self.assertIn(word, self.text)
+
+    def test_no_personal_data(self):
+        self.assertIn("聞き取り", self.text)
+        self.assertIn("個人データを読まない", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
