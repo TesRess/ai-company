@@ -1,5 +1,6 @@
 phase: none
 product: (なし)
+review_round: 0
 
 # 会社の状態
 

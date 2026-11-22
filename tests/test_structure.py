@@ -119,5 +119,40 @@ class CompanyCommandTest(unittest.TestCase):
         self.assertIn("個人データを読まない", self.text)
 
 
+class ReviewFixesTest(unittest.TestCase):
+    def test_deny_covers_local_connector_names_and_more_servers(self):
+        deny = json.loads(read(".claude/settings.json"))["permissions"]["deny"]
+        for rule in ["mcp__claude_ai_Gmail", "mcp__claude_ai_Google_Calendar",
+                     "mcp__claude_ai_Notion", "mcp__claude_ai_Slack", "mcp__Slack",
+                     "mcp__Canva", "mcp__Miro", "mcp__Claude_Docs"]:
+            self.assertIn(rule, deny)
+
+    def test_deny_merge_via_api(self):
+        deny = json.loads(read(".claude/settings.json"))["permissions"]["deny"]
+        self.assertIn("Bash(gh api:*)", deny)
+
+    def test_engineer_uses_worktree_and_stages_only_product(self):
+        text = read(".claude/agents/engineer.md")
+        self.assertIn("git worktree add", text)
+        self.assertIn("git add products/", text)
+        self.assertNotIn("git add -A", text)
+
+    def test_engineer_fallback_without_github(self):
+        self.assertIn("プッシュできない", read(".claude/agents/engineer.md"))
+
+    def test_review_round_persisted(self):
+        self.assertIn("review_round: 0", read("company/state.md"))
+        self.assertIn("review_round", read(".claude/commands/company.md"))
+
+    def test_records_committed(self):
+        self.assertIn("git add company/", read(".claude/commands/company.md"))
+
+    def test_resume_proposal_reshows_ideas(self):
+        self.assertIn("提案中の案をもう一度", read(".claude/commands/company.md"))
+
+    def test_pycache_ignored(self):
+        self.assertIn("__pycache__/", read(".gitignore"))
+
+
 if __name__ == "__main__":
     unittest.main()
