@@ -1,4 +1,4 @@
-phase: none
+phase: interview
 product: (なし)
 review_round: 0
 
