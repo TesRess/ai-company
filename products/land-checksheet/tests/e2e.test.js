@@ -139,7 +139,7 @@ test('条件5: 未入力のとき', async () => {
     await page.fill(sel.front, '');
     t = await out();
     assert.match(t, /駐車台数の目安（並べて止める場合）\s+間口を入れると表示/);
-    assert.match(t, /セットバック約0\.2m（減る面積は間口を入れると表示）/);
+    assert.match(t, /セットバック約0\.2m（間口が未入力のため、減る面積は引かずに計算中。間口を入れると表示）/);
     assert.deepEqual(pageErrors, []);
     await fillExample1();
 });
@@ -252,7 +252,10 @@ test('条件9: 既存の動き（古い案件・取り込み・ほかのペー�
     await page.evaluate(() => app.openLandImport(0));
     await page.fill('#li-paste-text', JSON.stringify({ '物件名': 'ダミー物件B', '所在地': 'ダミー市取込町5-6', '土地面積㎡': 180, '価格万円': 1200, '用途地域': '第二種住居地域', '建蔽率': 60, '容積率': 200, '備考': '南側4m道路' }));
     await page.evaluate(() => app.previewLandPaste());
-    await page.evaluate(() => app.runLandPaste());
+    // 第2版: 紹介文が入っている候補へは、取り込む前に確認が出る → 取り込む
+    await page.locator('#li-paste-run').click();
+    await page.waitForSelector('#confirm-modal:not(.hidden)');
+    await page.locator('#confirm-ok').click();
     await page.waitForTimeout(300);
     assert.equal(await page.inputValue(sel.addr), 'ダミー市取込町5-6');
     assert.equal(await page.inputValue(sel.width), '');

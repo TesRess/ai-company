@@ -43,7 +43,7 @@ test('条件1: 基本の例', () => {
 test('条件2: 道路が狭い例（セットバック）', () => {
     const c = LC.calc(ex2);
     const r = rowMap(ex2);
-    assert.equal(r['セットバック'], 'セットバック約0.2m、敷地が約2.0㎡減る');
+    assert.match(r['セットバック'], /^セットバック約0\.2m、敷地が約2\.0㎡減る/);
     assert.match(r['セットバック後の面積'], /元の面積 165\.29㎡/);
     assert.equal(LC.r1(c.building), '81.6');
     assert.equal(LC.r1(LC.tsubo(c.building)), '24.7');
@@ -134,4 +134,64 @@ test('条件10: 文章でコピーの中身', () => {
     assert.match(t, /セットバック約0\.2m、敷地が約2\.0㎡減る/);
     assert.match(t, /■ 注意点/);
     assert.match(t, /日影規制/);
+});
+
+// ===== 第2版（完成の条件 11〜13・16 の計算部分） =====
+const NO_FRONT = '前面道路が4m未満ですが、間口が未入力のため、セットバック分を引かずに計算しています（建てられる大きさの目安がやや大きく出ています）。間口を入れると、セットバック分を引いて計算し直します。';
+
+test('条件11: 4m未満・間口が空なら引かずに計算し、その旨を先頭に出す', () => {
+    const land = { ...ex1, roadWidth: '3.6', roadFrontage: '' };
+    const c = LC.calc(land);
+    assert.equal(LC.r1(c.building), '82.6');
+    assert.equal(LC.r1(c.total), '165.3');
+    assert.equal(c.infos[0], NO_FRONT);
+    assert.ok(LC.toText(land).includes(NO_FRONT));
+    assert.match(rowMap(land)['セットバック'], /間口が未入力のため、減る面積は引かずに計算中。間口を入れると表示/);
+    // 間口を入れると文が消えて引いた数字になる
+    const c2 = LC.calc({ ...land, roadFrontage: '10' });
+    assert.ok(!c2.infos.includes(NO_FRONT));
+    assert.equal(LC.r1(c2.building), '81.6');
+    assert.equal(LC.r1(LC.tsubo(c2.building)), '24.7');
+    assert.equal(LC.r1(c2.total), '163.3');
+    assert.equal(LC.r1(LC.tsubo(c2.total)), '49.4');
+    // 道路の幅が空のときの第1版の文は今まで通り（4m未満の文は出ない）
+    const c3 = LC.calc({ ...land, roadWidth: '' });
+    assert.ok(!c3.infos.includes(NO_FRONT));
+    assert.ok(c3.infos.some(t => /道路の幅を入れると/.test(t)));
+    // 4m以上では出ない
+    assert.ok(!LC.calc({ ...ex1, roadFrontage: '' }).infos.includes(NO_FRONT));
+});
+
+test('条件12: セットバックの意味の一文', () => {
+    const r = rowMap({ ...ex1, roadWidth: '3.6', roadFrontage: '10' });
+    assert.match(r['セットバック'], /道路の中心から2mの線まで敷地を下げる/);
+    assert.match(r['セットバック'], /建物も塀も建てられません/);
+    assert.match(rowMap({ ...ex1, roadWidth: '3.6', roadFrontage: '' })['セットバック'], /道路の中心から2mの線まで敷地を下げる/);
+    const r4 = rowMap(ex1);
+    assert.equal(r4['セットバック'], undefined);
+    assert.ok(!Object.values(r4).join().includes('建物も塀も'));
+    // 注意点の文は第1版のまま
+    assert.match(notesText(ex2), /接道（セットバック）：前面道路が4m未満のため/);
+});
+
+test('条件13: 用途地域が空でも道路斜線を出す', () => {
+    const blank = { ...ex1, zoning: '' };
+    const keys = noteKeys(blank);
+    assert.ok(keys.includes('road-slope'));
+    assert.match(notesText(blank), /道路斜線.*用途地域によって1\.25または1\.5/);
+    for (const k of ['north-slope', 'height', 'neighbor-slope']) assert.ok(!keys.includes(k), k);
+    assert.match(notesText(ex1), /道路斜線：道路の反対側から勾配1\.25/);
+    assert.ok(!noteKeys({ ...ex1, zoning: '指定なし（市街化調整区域等）' }).includes('road-slope'));
+});
+
+test('条件16: 角地・二方向道路の注意（緩和は自動で入れない）', () => {
+    const land = { ...ex1, roadCorner: '角地' };
+    const c = LC.calc(land);
+    assert.equal(LC.r1(c.building), '82.6');
+    const t = notesText(land);
+    assert.match(t, /もう一方の道路の幅も確認/);
+    assert.match(t, /役所で確認できたら『角地の緩和あり』にチェック/);
+    assert.match(notesText({ ...ex1, roadCorner: '二方向道路' }), /もう一方の道路の幅も確認/);
+    assert.ok(!noteKeys(ex1).includes('road-corner'));
+    assert.match(LC.toText(land), /前面道路：南側・幅4m・間口10m・公道・角地/);
 });

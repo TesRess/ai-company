@@ -1116,7 +1116,7 @@
             </div>
             <div class="p-6"><p class="text-sm text-gray-700 leading-relaxed" id="confirm-message"></p></div>
             <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
-                <button onclick="app.resolveConfirm(false)" class="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold transition-colors text-sm">キャンセル</button>
+                <button onclick="app.resolveConfirm(false)" id="confirm-cancel" class="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold transition-colors text-sm">キャンセル</button>
                 <button onclick="app.resolveConfirm(true)" id="confirm-ok" class="px-5 py-2 rounded bg-red-600 hover:bg-red-700 text-white font-bold transition-colors text-sm shadow-sm">削除する</button>
             </div>
         </div>
@@ -1304,6 +1304,9 @@
             const tsubo = (m2) => m2 / TSUBO;
             const fmtM2 = (m2) => `${r1(m2)}㎡（約${r1(tsubo(m2))}坪）`;
             const fmtNum = (v) => String(Math.round(v * 100) / 100);   // 入力値の表示（165.29 → 165.29、4 → 4）
+            const SETBACK_NO_FRONTAGE = '前面道路が4m未満ですが、間口が未入力のため、セットバック分を引かずに計算しています（建てられる大きさの目安がやや大きく出ています）。間口を入れると、セットバック分を引いて計算し直します。';
+            const SETBACK_MEANING = '（セットバック：道路の幅4mを確保するため、道路の中心から2mの線まで敷地を下げること。下げた部分には建物も塀も建てられません）';
+            const ROAD_CORNERS = ['角地', '二方向道路'];
             const isSouth = (d) => /^南/.test(d || '');
             const isNorth = (d) => /^北/.test(d || '');
 
@@ -1356,6 +1359,8 @@
                 }
                 if (kind === 'unknown' && roadWidth > 0 && roadWidth < 12) res.infos.push('用途地域が未入力のため、道路の幅による容積率は住居系（×0.4）として計算しています。');
                 if (!(roadWidth > 0)) res.infos.push('道路の幅を入れると、道路の幅による容積率の制限とセットバックを反映します。');
+                // 第2版A: 4m未満で間口が空のときは、引かずに計算していることを先頭ではっきり伝える
+                if (res.setback && res.setback.lost == null) res.infos.unshift(SETBACK_NO_FRONTAGE);
 
                 if (res.showSize && A > 0) {
                     if (res.coverage > 0) res.building = A * res.coverage / 100;
@@ -1380,6 +1385,9 @@
                 if (c.kind === 'none') add('chosei', '市街化調整区域などでは、原則として家が建てられない場合がある。必ず役所で確認してください（大きさの目安は出していません）。', 'strong');
                 if (c.kind === 'res' || c.kind === 'other') {
                     add('road-slope', `道路斜線：道路の反対側から勾配${c.kind === 'res' ? '1.25' : '1.5'}の線の内側に建物を収める必要があります。道路側の屋根や2階の形に影響します。`);
+                } else if (c.kind === 'unknown') {
+                    // 第2版B: 用途地域が空でも道路斜線は出す（勾配は決めない）
+                    add('road-slope', '道路斜線：道路の反対側から一定の勾配（用途地域によって1.25または1.5）の線の内側に建物を収める必要があります。道路側の屋根や2階の形に影響します。用途地域を入れると勾配が決まります。');
                 }
                 if (LOW_ZONES.includes(z) || MID_ZONES.includes(z)) {
                     const base = LOW_ZONES.includes(z)
@@ -1399,6 +1407,7 @@
                     add('setback', `接道（セットバック）：前面道路が4m未満のため、道路の中心から2mまで敷地を下げる必要があります（約${r1(c.setback.width)}m、${lost}）。下げた部分には塀や建物を置けません。`, 'warn');
                 }
                 if (c.frontage > 0 && c.frontage < 2) add('frontage', '接道：道路に接する長さが2m未満です。建築基準法の接道（2m以上）を満たさない恐れがあり、建て替えできない土地の可能性があります。', 'strong');
+                if (land.roadCorner) add('road-corner', `角地・二方向道路：もう一方の道路の幅も確認（4m未満ならそちらもセットバックが必要な場合あり）。角地の緩和（建ぺい率＋10%）は自治体の条件を満たす場合だけなので、役所で確認できたら『角地の緩和あり』にチェック。`, 'warn');
                 if (c.roadType === '私道') add('private-road', '接道（私道）：私道の持ち分、通行や掘削（水道・ガス工事）の承諾を確認してください。', 'warn');
                 const rs = String(land.restrictions || '');
                 if (/防火/.test(rs)) add('fire', '防火・準防火：窓や外壁などに防火の仕様が必要になり、費用に影響します。', 'warn');
@@ -1418,9 +1427,9 @@
                 const areaLine = c.area > 0 ? `${fmtNum(c.area)}㎡（約${r1(tsubo(c.area))}坪）` : dash;
                 out.push(['敷地面積', areaLine]);
                 if (c.setback) {
-                    out.push(['セットバック', c.setback.lost != null
+                    out.push(['セットバック', (c.setback.lost != null
                         ? `セットバック約${r1(c.setback.width)}m、敷地が約${r1(c.setback.lost)}㎡減る`
-                        : `セットバック約${r1(c.setback.width)}m（減る面積は間口を入れると表示）`]);
+                        : `セットバック約${r1(c.setback.width)}m（間口が未入力のため、減る面積は引かずに計算中。間口を入れると表示）`) + SETBACK_MEANING]);
                     if (c.setback.lost != null && c.area > 0) out.push(['セットバック後の面積', `${fmtM2(c.calcArea)}（元の面積 ${fmtNum(c.area)}㎡）`]);
                 }
                 if (!c.showSize) return out;
@@ -1450,7 +1459,7 @@
                 const c = calc(land);
                 const lines = [`【${HEADER}】`];
                 if (land.address) lines.push(`所在地：${land.address}`);
-                const road = [land.roadDir && `${land.roadDir}側`, c.roadWidth > 0 && `幅${fmtNum(c.roadWidth)}m`, c.frontage > 0 && `間口${fmtNum(c.frontage)}m`, land.roadType, land.cornerRelief && '角地の緩和あり'].filter(Boolean).join('・');
+                const road = [land.roadDir && `${land.roadDir}側`, c.roadWidth > 0 && `幅${fmtNum(c.roadWidth)}m`, c.frontage > 0 && `間口${fmtNum(c.frontage)}m`, land.roadType, land.roadCorner, land.cornerRelief && '角地の緩和あり'].filter(Boolean).join('・');
                 lines.push(`用途地域：${c.zoning || '未入力'}／建ぺい率 ${c.coverageBase ? c.coverageBase + '%' : '未入力'}／容積率 ${c.farBase ? c.farBase + '%' : '未入力'}`);
                 lines.push(`前面道路：${road || '未入力'}`);
                 lines.push('');
@@ -1512,7 +1521,7 @@
                 return (links || []).filter(l => l && l.city && l.url && a.startsWith(String(l.city).trim()));
             }
 
-            return { TSUBO, ROAD_DIRS, NONE_ZONE, firstNum, r1, tsubo, zoneKind, calc, rows, toText, introDraft, matchCityLinks, HEADER, DISCLAIMER };
+            return { TSUBO, ROAD_DIRS, ROAD_CORNERS, SETBACK_NO_FRONTAGE, SETBACK_MEANING, NONE_ZONE, firstNum, r1, tsubo, zoneKind, calc, rows, toText, introDraft, matchCityLinks, HEADER, DISCLAIMER };
         })();
     </script>
     <script type="module">
@@ -1862,7 +1871,7 @@
             // ================= データ雛形 =================
             function emptyLand() {
                 return { address: '', area: '', price: '', current: '', category: '', delivery: '', zoning: '', gas: '', terrain: '', water: '', coverage: '', conditions: '', far: '', restrictions: '', traffic: '', school: '', access: '', memo: '',
-                    roadDir: '', roadWidth: '', roadFrontage: '', roadType: '', cornerRelief: false, intro: '' };
+                    roadDir: '', roadWidth: '', roadFrontage: '', roadType: '', roadCorner: '', cornerRelief: false, intro: '' };
             }
             // ---------- 表紙・部屋紹介・おすすめオプション ----------
             const DEFAULT_COVER_CATCH = '大切なのは、\n建ててからの暮らし';
@@ -2087,8 +2096,9 @@
                 setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateY(-10px)'; setTimeout(() => toast.remove(), 300); }, type === 'error' ? 5000 : 3000);
             }
 
-            function askConfirm({ title = '確認', message = '', okText = '削除する' }) {
+            function askConfirm({ title = '確認', message = '', okText = '削除する', cancelText = 'キャンセル' }) {
                 document.getElementById('confirm-title').textContent = title;
+                document.getElementById('confirm-cancel').textContent = cancelText;
                 document.getElementById('confirm-message').innerHTML = message;
                 document.getElementById('confirm-ok').textContent = okText;
                 document.getElementById('confirm-modal').classList.remove('hidden');
@@ -4261,11 +4271,12 @@
                             ${field('法令上の制限 <span class="font-normal text-gray-400">(候補から選択・自由入力可)</span>', text(i, 'restrictions', info.restrictions, '例: 北側斜線制限', 'dl-restrictions'), 'lg:col-span-4')}
                             <div class="lg:col-span-4 bg-gray-50 border border-gray-200 rounded-lg p-3">
                                 <p class="text-xs font-bold text-gray-700 mb-2">前面道路 <span class="font-normal text-gray-400">(土地チェックシートの計算に使います。提案書には出ません)</span></p>
-                                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+                                <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
                                     ${field('道路の方位', makeSelect(LandCheck.ROAD_DIRS, info.roadDir, `app.updateLandInfo(${i}, 'roadDir', this.value)`))}
                                     ${field('道路の幅 (m)', `<input type="number" step="0.1" min="0" value="${esc(info.roadWidth)}" oninput="app.updateLandInfo(${i}, 'roadWidth', this.value)" class="${inputCls}" placeholder="例: 4">`)}
                                     ${field('間口＝道路に接する長さ (m)', `<input type="number" step="0.1" min="0" value="${esc(info.roadFrontage)}" oninput="app.updateLandInfo(${i}, 'roadFrontage', this.value)" class="${inputCls}" placeholder="例: 10">`)}
                                     ${field('公道／私道', makeSelect(['公道', '私道'], info.roadType, `app.updateLandInfo(${i}, 'roadType', this.value)`))}
+                                    ${field('角地・二方向道路', makeSelect(LandCheck.ROAD_CORNERS, info.roadCorner, `app.updateLandInfo(${i}, 'roadCorner', this.value)`))}
                                     <label class="flex items-center gap-2 text-xs font-bold text-gray-700 pb-2"><input type="checkbox" ${info.cornerRelief ? 'checked' : ''} onchange="app.updateLandInfo(${i}, 'cornerRelief', this.checked)" class="w-4 h-4 accent-current"> 角地の緩和あり<span class="font-normal text-gray-400">(役所で確認済み)</span></label>
                                 </div>
                             </div>
@@ -4861,6 +4872,12 @@
                 if (num(r.far) > 0) L.far = num(r.far) + '%';
                 const memo = [str(r.property_name), str(r.memo)].filter(Boolean).join('\n');
                 if (memo) L.memo = memo;
+                // 道路欄（読み取れなかった項目は空のまま。「角地の緩和あり」は役所で確認してから手で入れるので触らない）
+                L.roadDir = str(r.road_dir);
+                L.roadWidth = str(r.road_width);
+                L.roadFrontage = str(r.road_frontage);
+                L.roadType = str(r.road_type);
+                L.roadCorner = str(r.road_corner);
             }
 
 
@@ -4883,6 +4900,11 @@
                 ['法令上の制限', 'restrictions', '高度地区・防火地域・景観計画区域・宅地造成等工事規制区域・農地法・地区計画などを「・」区切りで'],
                 ['交通', 'traffic', '例: JR学園都市線「篠路」駅 徒歩5分'],
                 ['学校区', 'school', '例: 篠路西小学校 約400m・篠路西中学校 約280m'],
+                ['前面道路の方位', 'road_dir', '次のいずれか: 北 / 北東 / 東 / 南東 / 南 / 南西 / 西 / 北西（図面の方位記号から。道路が複数あるときは一番広い道路）'],
+                ['前面道路の幅m', 'road_width', '幅員の数値のみ（例: 4）。道路が複数あるときは一番広い道路'],
+                ['間口m', 'road_frontage', '上の道路に接する長さの数値のみ（例: 10）。図面に書かれていなければ ""'],
+                ['公道私道', 'road_type', '「公道」または「私道」（市道・町道・県道などは「公道」、位置指定道路・私道は「私道」）'],
+                ['角地・二方向道路', 'road_corner', '「角地」「二方向道路」のどちらか。道路が1本なら ""'],
                 ['備考', 'memo', '接道状況（方位・幅員・公道/私道）、市街化調整区域、私道負担、非課税などの特記事項を簡潔に']
             ];
             // 表記ゆれ（英語キーや別名）も受け付ける
@@ -4893,7 +4915,12 @@
                 '引渡時期': 'delivery', '引き渡し時期': 'delivery', '引渡し': 'delivery', '引渡': 'delivery',
                 'ガス種別': 'gas', '上水道・下水道': 'water', '水道': 'water', '設備': 'water',
                 '建ぺい率': 'coverage', '建蔽率(%)': 'coverage', '容積率(%)': 'far', '法令上の制限等': 'restrictions', 'その他法令上の制限': 'restrictions',
-                '最寄駅': 'traffic', 'アクセス': 'traffic', '学区': 'school', '小学校区': 'school', 'メモ': 'memo', '特記事項': 'memo'
+                '最寄駅': 'traffic', 'アクセス': 'traffic', '学区': 'school', '小学校区': 'school', 'メモ': 'memo', '特記事項': 'memo',
+                '道路方位': 'road_dir', '接道方位': 'road_dir', '方位': 'road_dir',
+                '幅員': 'road_width', '道路幅員': 'road_width', '前面道路幅員': 'road_width', '道路幅': 'road_width',
+                '間口': 'road_frontage', '接道長さ': 'road_frontage', '接道幅': 'road_frontage',
+                '公道/私道': 'road_type', '公私道': 'road_type', '道路種別': 'road_type',
+                '角地': 'road_corner', '二方向道路': 'road_corner', '2方向道路': 'road_corner'
             };
             const LAND_KEYS = new Set(PASTE_FIELDS.map(f => f[1]));
             const normKey = (k) => String(k || '').normalize('NFKC').replace(/[\s"'“”「」]/g, '');
@@ -4914,6 +4941,7 @@
 - 値の説明が「次のいずれか」の項目は、必ずその中から選んでください（当てはまらなければ ""）。
 - 用途地域の略記（例: 1低、2種中高）は正式名称に直してください。用途地域がない場合（無指定・市街化調整区域）は「指定なし（市街化調整区域等）」。
 - 数値の項目は単位やカンマを付けず数字だけにしてください。
+- 道路が複数ある場合、前面道路の方位・幅・間口は一番広い道路のものにし、ほかの道路の方位と幅は備考に書いてください。
 
 出力形式:
 [
@@ -5048,11 +5076,30 @@
                 out.gas = matchOption(r.gas, GAS_OPTIONS, { '都市ガス': '都市ガス', '集中': '集中プロパン', 'プロパン|LP': '個別プロパン(LPG)', 'なし|無し|オール電化': 'オール電化（ガス無し）' });
                 out.water = matchOption(r.water, WATER_OPTIONS, { '浄化槽': '公営水道・個別浄化槽', '(公営|上水|公共).*(公共|下水)': '公営水道・公共下水' });
                 out.conditions = matchOption(r.conditions, CONDITION_OPTIONS, { 'なし|無|ではありません': '無し', '付|有|あり': '有り' });
+                // 道路情報（あいまいな値は空にして、間違った注意を出さない）
+                const dir = toHalf(r.road_dir).replace(/[\s　]|側|向き|方向|道路|接道/g, '');
+                out.road_dir = LandCheck.ROAD_DIRS.includes(dir) ? dir : '';
+                const roadNum = (v) => {
+                    const t = toHalf(v);
+                    if (/\d[,，]\d/.test(t)) return '';   // 「3,6」のような崩れは読まない
+                    const n = toNum(t);
+                    return n > 0 ? String(n) : '';
+                };
+                out.road_width = roadNum(r.road_width);
+                out.road_frontage = roadNum(r.road_frontage);
+                const rt = toHalf(r.road_type);
+                out.road_type = /私道|位置指定/.test(rt) ? '私道' : /公道|市道|町道|村道|区道|県道|都道|府道|道道|国道/.test(rt) ? '公道' : '';
+                const rc = toHalf(r.road_corner);
+                out.road_corner = /角地/.test(rc) ? '角地' : /二方向|2方向|両面/.test(rc) ? '二方向道路' : '';
                 return out;
             }
             function landPasteRecords() {
                 const text = document.getElementById('li-paste-text').value;
                 return parseLandPayload(text).map(normalizeLandRecord).filter(r => r.address || r.area_sqm || r.price_man || r.property_name);
+            }
+            // 取り込み確認の表の「道路」列（例「南 4m 間口10m 公道」）
+            function roadSummary(r) {
+                return [r.road_dir, r.road_width && `${r.road_width}m`, r.road_frontage && `間口${r.road_frontage}m`, r.road_type, r.road_corner].filter(Boolean).join(' ') || '—';
             }
             function previewLandPaste() {
                 const box = document.getElementById('li-paste-preview');
@@ -5066,8 +5113,8 @@
                 if (!recs.length) { box.innerHTML = `<p class="text-red-600 font-bold">読み取れる物件情報が見つかりません。${esc(error)}</p>`; return; }
                 box.innerHTML = `<p class="font-bold text-emerald-700 mb-1">${recs.length}件の物件を認識しました</p>
                     <div class="overflow-x-auto"><table class="w-full text-[11px] border border-gray-200">
-                        <thead class="bg-gray-50 text-gray-600"><tr><th class="p-1 text-left">#</th><th class="p-1 text-left">所在地</th><th class="p-1 text-right">面積</th><th class="p-1 text-right">価格</th><th class="p-1 text-left">用途地域</th><th class="p-1 text-left">建蔽/容積</th></tr></thead>
-                        <tbody>${recs.map((r, i) => `<tr class="border-t border-gray-100"><td class="p-1">${i + 1}</td><td class="p-1">${esc(r.address || r.property_name || '—')}</td><td class="p-1 text-right whitespace-nowrap">${r.area_sqm ? r.area_sqm + '㎡' : '—'}</td><td class="p-1 text-right whitespace-nowrap">${r.price_man ? r.price_man.toLocaleString() + '万円' : '—'}</td><td class="p-1">${esc(r.zoning || '—')}</td><td class="p-1 whitespace-nowrap">${r.coverage || '—'}% / ${r.far || '—'}%</td></tr>`).join('')}</tbody>
+                        <thead class="bg-gray-50 text-gray-600"><tr><th class="p-1 text-left">#</th><th class="p-1 text-left">所在地</th><th class="p-1 text-right">面積</th><th class="p-1 text-right">価格</th><th class="p-1 text-left">用途地域</th><th class="p-1 text-left">建蔽/容積</th><th class="p-1 text-left">道路</th></tr></thead>
+                        <tbody>${recs.map((r, i) => `<tr class="border-t border-gray-100"><td class="p-1">${i + 1}</td><td class="p-1">${esc(r.address || r.property_name || '—')}</td><td class="p-1 text-right whitespace-nowrap">${r.area_sqm ? r.area_sqm + '㎡' : '—'}</td><td class="p-1 text-right whitespace-nowrap">${r.price_man ? r.price_man.toLocaleString() + '万円' : '—'}</td><td class="p-1">${esc(r.zoning || '—')}</td><td class="p-1 whitespace-nowrap">${r.coverage || '—'}% / ${r.far || '—'}%</td><td class="p-1 whitespace-nowrap">${esc(roadSummary(r))}</td></tr>`).join('')}</tbody>
                     </table></div>`;
             }
             async function readTextFile(file) {
@@ -5092,14 +5139,20 @@
                 const f = e.dataTransfer.files?.[0];
                 if (f) loadLandPasteFile(f);
             }
-            function runLandPaste() {
+            async function runLandPaste() {
                 if (!landImport) return;
                 let recs;
                 try { recs = landPasteRecords(); } catch (e) { showToast('読み取れませんでした: ' + e.message, 'error'); return; }
                 if (!recs.length) { showToast('取り込める物件情報がありません', 'error'); return; }
+                const target = landImport.target;
+                // 取り込み先の候補に土地紹介文が入っているときだけ、置き換わることを先に確認する
+                if (String(state.landInfos[target]?.intro || '').trim()) {
+                    const ok = await askConfirm({ title: '土地紹介文の置き換え', message: 'この候補の土地紹介文（と手で入れた内容）は、取り込んだ内容で置き換わります。取り込みますか？', okText: '取り込む', cancelText: 'やめる' });
+                    if (!ok || !landImport) return;
+                }
                 const touched = [];
                 recs.forEach((r, k) => {
-                    let idx = landImport.target;
+                    let idx = target;
                     if (k > 0 || idx >= state.landInfos.length) {
                         state.landInfos.push(emptyLand());
                         idx = state.landInfos.length - 1;
