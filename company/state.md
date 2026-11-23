@@ -1,5 +1,5 @@
-phase: proposal
-product: (なし)
+phase: spec
+product: land-checksheet
 review_round: 0
 
 # 会社の状態
