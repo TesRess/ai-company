@@ -1,4 +1,4 @@
-phase: review
+phase: owner_review
 product: land-checksheet
 review_round: 1
 
@@ -8,3 +8,5 @@ review_round: 1
 
 ## メモ
 （社長役が、段階が変わるたびに上の2行とこのメモを更新する）
+- 2026-11-23 land-checksheet: レビュー1回目で合格。ブランチ product/land-checksheet（setup/ai-company から作成）。オーナー確認待ち。
+- 次の版の候補: 4m未満で間口が空のとき「セットバック分は引いていません」と注記 / 用途地域が空でも道路斜線の注意を出す / 取り込みJSONに道路情報を追加 / 販売図面ワンクリック読み取り / 土地候補の比較表
