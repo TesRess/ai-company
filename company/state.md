@@ -1,6 +1,6 @@
-phase: build
+phase: review
 product: land-checksheet
-review_round: 0
+review_round: 1
 
 # 会社の状態
 
