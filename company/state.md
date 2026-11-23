@@ -1,4 +1,4 @@
-phase: spec_review
+phase: build
 product: land-checksheet
 review_round: 0
 
