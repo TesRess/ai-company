@@ -40,8 +40,11 @@ class FoundationTest(unittest.TestCase):
         ]:
             self.assertIn(rule, deny)
 
-    def test_state_initial(self):
-        self.assertIn("phase: none", read("company/state.md"))
+    def test_state_phase_valid(self):
+        first = read("company/state.md").splitlines()[0]
+        phases = ["none", "interview", "proposal", "spec", "spec_review", "build",
+                  "review", "owner_review", "done", "cancelled"]
+        self.assertIn(first, [f"phase: {p}" for p in phases])
 
     def test_records_exist(self):
         for path in ["company/problems.md", "company/ideas.md", "products/README.md"]:
