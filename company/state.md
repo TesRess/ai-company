@@ -1,4 +1,4 @@
-phase: interview
+phase: proposal
 product: (なし)
 review_round: 0
 
