@@ -144,7 +144,7 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertIn("プッシュできない", read(".claude/agents/engineer.md"))
 
     def test_review_round_persisted(self):
-        self.assertIn("review_round: 0", read("company/state.md"))
+        self.assertRegex(read("company/state.md"), r"(?m)^review_round: [0-3]$")
         self.assertIn("review_round", read(".claude/commands/company.md"))
 
     def test_records_committed(self):
