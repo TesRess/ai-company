@@ -1278,6 +1278,243 @@
         </div>
     </div>
 
+    <script id="land-checksheet-logic">
+        // =====================================================================
+        //  土地チェックシート（目安）の計算部分
+        //  画面とは切り離してあり、テストでは この <script> の中身だけを取り出して動かします。
+        //  ここで出す数字・注意点はすべて一般的な目安です（最終確認は役所・設計担当）。
+        // =====================================================================
+        window.LandCheck = (function () {
+            'use strict';
+            const TSUBO = 3.30578;
+            const ROAD_DIRS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+            const NONE_ZONE = '指定なし（市街化調整区域等）';
+            const LOW_ZONES = ['第一種低層住居専用地域', '第二種低層住居専用地域', '田園住居地域'];
+            const MID_ZONES = ['第一種中高層住居専用地域', '第二種中高層住居専用地域'];
+            const RES_ZONES = [...LOW_ZONES, ...MID_ZONES, '第一種住居地域', '第二種住居地域', '準住居地域'];
+            const OTHER_ZONES = ['近隣商業地域', '商業地域', '準工業地域', '工業地域', '工業専用地域'];
+
+            // 文字列の先頭の数字を取り出す（既存の firstNum と同じ考え方。全角数字も読む）
+            const firstNum = (v) => {
+                const m = String(v == null ? '' : v).normalize('NFKC').replace(/,/g, '').match(/[0-9]+(?:\.[0-9]+)?/);
+                return m ? parseFloat(m[0]) : 0;
+            };
+            // 小数1桁で表示（浮動小数の誤差で 81.649999… などにならないよう少し補正）
+            const r1 = (v) => (Math.round((v + Math.sign(v) * 1e-9) * 10) / 10).toFixed(1);
+            const tsubo = (m2) => m2 / TSUBO;
+            const fmtM2 = (m2) => `${r1(m2)}㎡（約${r1(tsubo(m2))}坪）`;
+            const fmtNum = (v) => String(Math.round(v * 100) / 100);   // 入力値の表示（165.29 → 165.29、4 → 4）
+            const isSouth = (d) => /^南/.test(d || '');
+            const isNorth = (d) => /^北/.test(d || '');
+
+            function zoneKind(zoning) {
+                const z = String(zoning || '').trim();
+                if (!z) return 'unknown';
+                if (z === NONE_ZONE || /指定なし|調整区域/.test(z)) return 'none';
+                if (RES_ZONES.includes(z)) return 'res';
+                if (OTHER_ZONES.includes(z)) return 'other';
+                return /住居/.test(z) ? 'res' : 'other';
+            }
+
+            // land: 土地情報 1件（state.landInfos[i] と同じ形）
+            function calc(land) {
+                land = land || {};
+                const zoning = String(land.zoning || '').trim();
+                const kind = zoneKind(zoning);
+                const area = firstNum(land.area);
+                const cov0 = firstNum(land.coverage);
+                const far0 = firstNum(land.far);
+                const roadWidth = firstNum(land.roadWidth);
+                const frontage = firstNum(land.roadFrontage);
+                const corner = !!land.cornerRelief;
+                const res = {
+                    kind, zoning, area, roadWidth, frontage, roadDir: land.roadDir || '', roadType: land.roadType || '',
+                    showSize: kind !== 'none',
+                    setback: null,        // { width, lost }（lost は間口未入力なら null）
+                    calcArea: area,       // セットバック後の面積
+                    coverage: cov0 ? cov0 + (corner ? 10 : 0) : 0, coverageBase: cov0, corner,
+                    farBase: far0, farRoad: null, far: far0, farReduced: false,
+                    building: null, total: null, hiraya: null, twoStory: null,
+                    parking: null, parkingByFrontage: null, parkingBySpace: null,
+                    notes: [], infos: [],
+                };
+
+                // セットバック
+                if (roadWidth > 0 && roadWidth < 4) {
+                    const w = (4 - roadWidth) / 2;
+                    const lost = frontage > 0 ? w * frontage : null;
+                    res.setback = { width: w, lost };
+                    if (lost != null && area > 0) res.calcArea = Math.max(0, area - lost);
+                }
+                const A = res.calcArea;
+
+                // 容積率（道路の幅が12m未満なら 道路の幅×0.4／0.6 と比べる。4m未満は4mとして計算）
+                if (roadWidth > 0 && roadWidth < 12) {
+                    const factor = kind === 'other' ? 0.6 : 0.4;
+                    res.farRoad = Math.round(Math.max(roadWidth, 4) * factor * 1000) / 10;
+                    if (far0 > 0 && res.farRoad < far0) { res.far = res.farRoad; res.farReduced = true; }
+                }
+                if (kind === 'unknown' && roadWidth > 0 && roadWidth < 12) res.infos.push('用途地域が未入力のため、道路の幅による容積率は住居系（×0.4）として計算しています。');
+                if (!(roadWidth > 0)) res.infos.push('道路の幅を入れると、道路の幅による容積率の制限とセットバックを反映します。');
+
+                if (res.showSize && A > 0) {
+                    if (res.coverage > 0) res.building = A * res.coverage / 100;
+                    if (res.far > 0) res.total = A * res.far / 100;
+                    if (res.building != null) res.hiraya = res.building;
+                    if (res.building != null && res.total != null) res.twoStory = Math.min(res.building * 2, res.total);
+                    if (frontage > 0 && res.building != null) {
+                        res.parkingByFrontage = Math.max(0, Math.floor((frontage - 1.0) / 2.5 + 1e-9));
+                        res.parkingBySpace = Math.max(0, Math.floor((A - res.building) / 15 + 1e-9));
+                        res.parking = Math.min(res.parkingByFrontage, res.parkingBySpace);
+                    }
+                }
+
+                res.notes = buildNotes(land, res);
+                return res;
+            }
+
+            function buildNotes(land, c) {
+                const n = [];
+                const add = (key, text, level = 'normal') => n.push({ key, text, level });
+                const z = c.zoning, dir = c.roadDir;
+                if (c.kind === 'none') add('chosei', '市街化調整区域などでは、原則として家が建てられない場合がある。必ず役所で確認してください（大きさの目安は出していません）。', 'strong');
+                if (c.kind === 'res' || c.kind === 'other') {
+                    add('road-slope', `道路斜線：道路の反対側から勾配${c.kind === 'res' ? '1.25' : '1.5'}の線の内側に建物を収める必要があります。道路側の屋根や2階の形に影響します。`);
+                }
+                if (LOW_ZONES.includes(z) || MID_ZONES.includes(z)) {
+                    const base = LOW_ZONES.includes(z)
+                        ? '北側斜線：北側の隣地の日当たりを守るため、真北方向に高さ5m＋勾配1.25の制限があります。'
+                        : '北側斜線：北側の隣地の日当たりを守るため、真北方向に高さ10m＋勾配1.25の制限があります（日影規制がある地域では外れることがあります）。';
+                    let extra = '';
+                    if (isSouth(dir)) extra = '南道路なので建物の北側が隣地になり、2階北側の屋根の形に影響が出やすいです。';
+                    else if (isNorth(dir)) extra = '北側が道路なので、北側斜線は比較的ゆるいです。';
+                    add('north-slope', base + extra);
+                }
+                if (LOW_ZONES.includes(z)) add('height', '高さの制限：建物の高さは10mまたは12mまで（都市計画で決まります）。');
+                if ((c.kind === 'res' || c.kind === 'other') && !LOW_ZONES.includes(z)) {
+                    add('neighbor-slope', '隣地斜線：隣地境界から高さ20m（または31m）＋勾配の制限があります。一般的な2階建てでは影響は小さいです。');
+                }
+                if (c.setback) {
+                    const lost = c.setback.lost != null ? `敷地が約${r1(c.setback.lost)}㎡減ります` : '減る面積は間口を入れると表示します';
+                    add('setback', `接道（セットバック）：前面道路が4m未満のため、道路の中心から2mまで敷地を下げる必要があります（約${r1(c.setback.width)}m、${lost}）。下げた部分には塀や建物を置けません。`, 'warn');
+                }
+                if (c.frontage > 0 && c.frontage < 2) add('frontage', '接道：道路に接する長さが2m未満です。建築基準法の接道（2m以上）を満たさない恐れがあり、建て替えできない土地の可能性があります。', 'strong');
+                if (c.roadType === '私道') add('private-road', '接道（私道）：私道の持ち分、通行や掘削（水道・ガス工事）の承諾を確認してください。', 'warn');
+                const rs = String(land.restrictions || '');
+                if (/防火/.test(rs)) add('fire', '防火・準防火：窓や外壁などに防火の仕様が必要になり、費用に影響します。', 'warn');
+                if (/高度地区/.test(rs)) add('kodo', '高度地区：自治体ごとの高度地区の基準（高さや斜線）を確認してください。');
+                if (/景観/.test(rs)) add('keikan', '景観：建物の色や形について、届出や基準がないか確認してください。');
+                if (/宅地造成/.test(rs)) add('zosei', '宅地造成：擁壁や造成の状態、工事の許可が必要かを確認してください。', 'warn');
+                add('local', '日影規制・壁面後退・敷地の最低面積・条例などは自治体ごとに異なるため、役所で確認してください。');
+                // 一番強い注意を上に
+                const order = { strong: 0, warn: 1, normal: 2 };
+                return n.map((x, i) => ({ ...x, i })).sort((a, b) => (order[a.level] - order[b.level]) || (a.i - b.i)).map(({ i, ...x }) => x);
+            }
+
+            // 画面・コピー用の行（ラベルと値）
+            function rows(c) {
+                const dash = '—';
+                const out = [];
+                const areaLine = c.area > 0 ? `${fmtNum(c.area)}㎡（約${r1(tsubo(c.area))}坪）` : dash;
+                out.push(['敷地面積', areaLine]);
+                if (c.setback) {
+                    out.push(['セットバック', c.setback.lost != null
+                        ? `セットバック約${r1(c.setback.width)}m、敷地が約${r1(c.setback.lost)}㎡減る`
+                        : `セットバック約${r1(c.setback.width)}m（減る面積は間口を入れると表示）`]);
+                    if (c.setback.lost != null && c.area > 0) out.push(['セットバック後の面積', `${fmtM2(c.calcArea)}（元の面積 ${fmtNum(c.area)}㎡）`]);
+                }
+                if (!c.showSize) return out;
+                const cov = c.coverage > 0 ? `建ぺい率${c.coverage}%${c.corner && c.coverageBase ? `（角地の緩和 ${c.coverageBase}%＋10%）` : ''}` : '';
+                out.push(['建築面積の上限', c.building != null ? `${fmtM2(c.building)}　${cov}` : dash]);
+                let farTxt = '';
+                if (c.farBase > 0) {
+                    if (c.farReduced) farTxt = `道路の幅のため ${c.farBase}% → ${c.far}% で計算`;
+                    else if (c.farRoad != null) farTxt = `使う容積率は ${c.far}%（道路による制限 ${c.farRoad}% より指定の方が小さいため）`;
+                    else farTxt = `使う容積率は ${c.far}%`;
+                }
+                out.push(['延床面積の上限', c.total != null ? `${fmtM2(c.total)}　${farTxt}` : dash]);
+                out.push(['平屋なら', c.hiraya != null ? `約${r1(tsubo(c.hiraya))}坪まで（${r1(c.hiraya)}㎡）` : dash]);
+                out.push(['2階建てなら', c.twoStory != null ? `約${r1(tsubo(c.twoStory))}坪まで（延床 ${r1(c.twoStory)}㎡）` : dash]);
+                let park;
+                if (!(c.frontage > 0)) park = '間口を入れると表示';
+                else if (c.parking == null) park = dash;
+                else park = `${c.parking}台（間口から${c.parkingByFrontage}台、空き地の広さから${c.parkingBySpace}台 → 小さい方）`;
+                out.push(['駐車台数の目安（並べて止める場合）', park]);
+                return out;
+            }
+
+            const HEADER = '土地チェックシート（目安）';
+            const DISCLAIMER = '※ すべて一般的な目安です。最終的には役所・設計担当で確認が必要です。';
+
+            function toText(land) {
+                const c = calc(land);
+                const lines = [`【${HEADER}】`];
+                if (land.address) lines.push(`所在地：${land.address}`);
+                const road = [land.roadDir && `${land.roadDir}側`, c.roadWidth > 0 && `幅${fmtNum(c.roadWidth)}m`, c.frontage > 0 && `間口${fmtNum(c.frontage)}m`, land.roadType, land.cornerRelief && '角地の緩和あり'].filter(Boolean).join('・');
+                lines.push(`用途地域：${c.zoning || '未入力'}／建ぺい率 ${c.coverageBase ? c.coverageBase + '%' : '未入力'}／容積率 ${c.farBase ? c.farBase + '%' : '未入力'}`);
+                lines.push(`前面道路：${road || '未入力'}`);
+                lines.push('');
+                rows(c).forEach(([k, v]) => lines.push(`${k}：${v}`));
+                c.infos.forEach(t => lines.push(`（${t}）`));
+                lines.push('');
+                lines.push('■ 注意点');
+                c.notes.forEach(x => lines.push(`・${x.text}`));
+                lines.push('');
+                lines.push(DISCLAIMER);
+                return lines.join('\n');
+            }
+
+            const ZONE_TEXT = (z, kind) => {
+                if (LOW_ZONES.includes(z)) return '低層の住宅を中心とした、落ち着いた住環境が保たれやすいエリアです。';
+                if (MID_ZONES.includes(z)) return '住宅を中心としたエリアです。';
+                if (kind === 'res') return '住宅を中心に、お店なども混在するエリアです。';
+                if (kind === 'other') return 'お店や事業所なども建てられる、利便性の高いエリアです。';
+                return '';
+            };
+            const SUN_TEXT = (d) => {
+                if (isSouth(d)) return '南側が道路に面しているため、日当たりを確保しやすい土地です。';
+                if (d === '東') return '朝の日当たりを取り込みやすい土地です。';
+                if (d === '西') return '午後の日当たりを取り込みやすい土地です。';
+                if (isNorth(d)) return '北側が道路のため、南側にお庭やリビングを配置しやすく、日当たりを工夫した間取りが楽しめます。';
+                return '';
+            };
+
+            // お客様向けの土地紹介文の下書き（決まった文の型。AIは使わない）
+            function introDraft(land) {
+                land = land || {};
+                const c = calc(land);
+                const s = [];
+                const addr = String(land.address || '').trim();
+                const z = c.zoning;
+                if (c.kind === 'res' || c.kind === 'other') s.push(`${addr ? addr + 'に位置する、' : ''}${z}の土地です。${ZONE_TEXT(z, c.kind)}`);
+                else if (addr) s.push(`${addr}に位置する土地です。`);
+                if (c.area > 0) s.push(`敷地は約${r1(tsubo(c.area))}坪（${fmtNum(c.area)}㎡）のゆとりある広さです。`);
+                if (land.roadDir || c.roadWidth > 0) {
+                    const road = `${land.roadDir ? land.roadDir + '側の' : ''}${c.roadWidth > 0 ? fmtNum(c.roadWidth) + 'm' : ''}道路`;
+                    s.push(`${road}${land.roadType ? `（${land.roadType}）` : ''}に面し${c.frontage > 0 ? `、間口は約${r1(c.frontage)}mあります` : 'ています'}。${SUN_TEXT(land.roadDir)}`);
+                }
+                if (c.showSize && (c.coverageBase || c.farBase)) {
+                    const ratio = [c.coverageBase && `建ぺい率${c.coverageBase}%`, c.farBase && `容積率${c.farBase}%`].filter(Boolean).join('・');
+                    const size = [c.hiraya != null && `平屋なら約${r1(tsubo(c.hiraya))}坪`, c.twoStory != null && `2階建てなら延床約${r1(tsubo(c.twoStory))}坪`].filter(Boolean).join('、');
+                    s.push(size ? `${ratio}で、${size}までの住まいが目安です。` : `${ratio}の土地です。`);
+                    if (c.parking != null && c.parking > 0) s.push(`お車は並べて約${c.parking}台分の駐車スペースが目安です。`);
+                }
+                if (land.traffic) s.push(`交通は${String(land.traffic).trim()}です。`);
+                if (land.school) s.push(`学校区は${String(land.school).trim()}です。`);
+                s.push('※建てられる大きさ・駐車台数は目安です。詳しくは設計の段階で確認いたします。');
+                return s.join('');
+            }
+
+            // 都市計画図のリンク（この端末に保存）。所在地が登録した市区町村名で始まるものを返す
+            function matchCityLinks(address, links) {
+                const a = String(address || '').trim();
+                if (!a) return [];
+                return (links || []).filter(l => l && l.city && l.url && a.startsWith(String(l.city).trim()));
+            }
+
+            return { TSUBO, ROAD_DIRS, NONE_ZONE, firstNum, r1, tsubo, zoneKind, calc, rows, toText, introDraft, matchCityLinks, HEADER, DISCLAIMER };
+        })();
+    </script>
     <script type="module">
         // =====================================================================
         //  会社設定（ここを書き換えるとアプリ全体・提案書全体に反映されます）
@@ -1624,7 +1861,8 @@
 
             // ================= データ雛形 =================
             function emptyLand() {
-                return { address: '', area: '', price: '', current: '', category: '', delivery: '', zoning: '', gas: '', terrain: '', water: '', coverage: '', conditions: '', far: '', restrictions: '', traffic: '', school: '', access: '', memo: '' };
+                return { address: '', area: '', price: '', current: '', category: '', delivery: '', zoning: '', gas: '', terrain: '', water: '', coverage: '', conditions: '', far: '', restrictions: '', traffic: '', school: '', access: '', memo: '',
+                    roadDir: '', roadWidth: '', roadFrontage: '', roadType: '', cornerRelief: false, intro: '' };
             }
             // ---------- 表紙・部屋紹介・おすすめオプション ----------
             const DEFAULT_COVER_CATCH = '大切なのは、\n建ててからの暮らし';
@@ -3771,9 +4009,9 @@
             }
 
             // ================= 土地情報 =================
-            function updateLandInfo(index, key, val) { state.landInfos[index][key] = val; }
+            function updateLandInfo(index, key, val) { state.landInfos[index][key] = val; refreshLandCheck(index); }
             function updateLandPrice(index, val) { state.landInfos[index].price = num(val) ? num(val).toLocaleString() + '万円' : ''; updateLandUnitPrice(index); }
-            function updateLandPercent(index, key, val) { state.landInfos[index][key] = val ? val + '%' : ''; }
+            function updateLandPercent(index, key, val) { state.landInfos[index][key] = val ? val + '%' : ''; refreshLandCheck(index); }
 
             function calcTsubo(index, sqm) {
                 const val = parseFloat(sqm);
@@ -3787,6 +4025,7 @@
                     state.landInfos[index].area = sqm ? `${sqm} ㎡` : '';
                 }
                 updateLandUnitPrice(index);
+                refreshLandCheck(index);
             }
 
             function landUnitPrice(info) {
@@ -3838,6 +4077,144 @@
                 markDirty();
             }
 
+            // ================= 土地チェックシート（目安） =================
+            // 計算は window.LandCheck（画面と切り離した部分）。ここは表示・リンク・コピーだけ。
+            const CITYPLAN_KEY = 'kw_cityplan_links';
+            const LAND_LINKS = {
+                hazard:    { label: '重ねるハザードマップ', url: 'https://disaportal.gsi.go.jp/maps/' },
+                wagamachi: { label: 'わがまちハザードマップ', url: 'https://disaportal.gsi.go.jp/hazardmapportal/hazardmap/index.html' },
+                reinfolib: { label: '不動産情報ライブラリ', url: 'https://www.reinfolib.mlit.go.jp/' },
+            };
+            function getCityLinks() {
+                try { const a = JSON.parse(localStorage.getItem(CITYPLAN_KEY) || '[]'); return Array.isArray(a) ? a.filter(l => l && l.city && l.url) : []; } catch (e) { return []; }
+            }
+            function setCityLinks(a) {
+                try { localStorage.setItem(CITYPLAN_KEY, JSON.stringify(a)); return true; } catch (e) { showToast('この端末に保存できませんでした', 'error'); return false; }
+            }
+            function landCheckOutHtml(index) {
+                const land = state.landInfos[index] || emptyLand();
+                const c = LandCheck.calc(land);
+                const rowsHtml = LandCheck.rows(c).map(([k, v]) => `<div class="flex gap-3 py-1.5 border-b border-amber-100"><dt class="w-40 shrink-0 text-gray-500">${esc(k)}</dt><dd class="font-bold text-gray-900 min-w-0">${esc(v)}</dd></div>`).join('');
+                const infos = c.infos.map(t => `<p class="text-[11px] text-gray-500 mt-1">※ ${esc(t)}</p>`).join('');
+                const noteCls = { strong: 'bg-red-50 border-red-300 text-red-800 font-bold', warn: 'bg-orange-50 border-orange-200 text-orange-900', normal: 'bg-white border-gray-200 text-gray-700' };
+                const notes = c.notes.map(n => `<li data-note="${n.key}" class="border rounded px-3 py-1.5 ${noteCls[n.level] || noteCls.normal}">${esc(n.text)}</li>`).join('');
+                return `
+                    <dl class="text-sm">${rowsHtml}</dl>${infos}
+                    <p class="text-xs font-bold text-gray-700 mt-4 mb-1.5">注意点（目安）</p>
+                    <ul class="space-y-1.5 text-xs leading-relaxed">${notes}</ul>`;
+            }
+            function landCityButtonsHtml(index) {
+                const addr = state.landInfos[index]?.address, all = getCityLinks();
+                return LandCheck.matchCityLinks(addr, all).map(l => `<button onclick="app.openLandLink(${index}, 'city', ${all.indexOf(l)})" class="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 font-bold text-xs py-2 px-3 rounded flex items-center gap-1"><i data-lucide="map-pin" class="w-4 h-4 text-amber-600"></i> ${esc(l.city)}の都市計画図</button>`).join('');
+            }
+            function landCheckHtml(i) {
+                const info = state.landInfos[i] || emptyLand();
+                const btn = 'bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 font-bold text-xs py-2 px-3 rounded flex items-center gap-1';
+                const links = getCityLinks();
+                return `
+                        <div id="land-check-${i}" class="mt-6 bg-amber-50/60 border border-amber-200 rounded-lg p-4">
+                            <div class="flex justify-between items-start gap-3 mb-1">
+                                <p class="font-bold text-gray-800 flex items-center gap-2"><i data-lucide="clipboard-check" class="w-5 h-5 text-amber-600"></i> 土地チェックシート（目安）<span class="text-[11px] font-normal text-gray-500">社内向け・提案書には入りません</span></p>
+                                <button onclick="app.copyLandCheck(${i})" class="${btn} shrink-0"><i data-lucide="copy" class="w-4 h-4 text-amber-600"></i> 文章でコピー</button>
+                            </div>
+                            <p class="text-xs text-amber-900 mb-3">${esc(LandCheck.DISCLAIMER)} 入力を変えるとすぐ計算し直します。</p>
+                            <div id="land-check-out-${i}">${landCheckOutHtml(i)}</div>
+
+                            <div class="mt-5 pt-4 border-t border-amber-200">
+                                <p class="text-xs font-bold text-gray-700 mb-1">調べるためのリンク</p>
+                                <p class="text-[11px] text-gray-500 mb-2">押すと所在地をコピーしてから、新しいタブでサイトを開きます。開いたサイトの検索欄に貼り付け（Ctrl＋V／Macは Cmd＋V）してください。撮った画面は下の「画面を撮影して取り込む」で「土地解析」に入れられます。</p>
+                                <div class="flex flex-wrap gap-2">
+                                    ${Object.entries(LAND_LINKS).map(([k, l]) => `<button onclick="app.openLandLink(${i}, '${k}')" class="${btn}"><i data-lucide="external-link" class="w-4 h-4 text-amber-600"></i> ${l.label}</button>`).join('')}
+                                    <button onclick="app.openLandLink(${i}, 'gmap')" class="${btn}"><i data-lucide="map" class="w-4 h-4 text-amber-600"></i> Googleマップ</button>
+                                    <span id="land-check-city-${i}" class="contents">${landCityButtonsHtml(i)}</span>
+                                </div>
+                                <details class="mt-3 text-xs">
+                                    <summary class="cursor-pointer text-gray-600 font-bold">市区町村の都市計画図のリンクを登録（この端末に保存）</summary>
+                                    <div class="mt-2 bg-white border border-gray-200 rounded p-3">
+                                        <p class="text-[11px] text-gray-500 mb-2">所在地が登録した名前で始まる土地に「○○の都市計画図」ボタンが出ます（例: 札幌市 → 札幌市の都市計画図のページ）。</p>
+                                        <div class="flex flex-wrap gap-2 items-center">
+                                            <input id="land-city-name-${i}" type="text" oninput="event.stopPropagation()" class="${inputCls} !w-40" placeholder="市区町村名 例: 札幌市">
+                                            <input id="land-city-url-${i}" type="url" oninput="event.stopPropagation()" class="${inputCls} !w-80" placeholder="https://…">
+                                            <button onclick="app.addCityLink(${i})" class="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 px-3 rounded">登録</button>
+                                        </div>
+                                        <ul class="mt-2 space-y-1">${links.length ? links.map((l, k) => `<li class="flex items-center gap-2"><span class="font-bold">${esc(l.city)}</span><span class="text-gray-500 truncate max-w-md">${esc(l.url)}</span><button onclick="app.removeCityLink(${k})" class="text-red-500 hover:text-red-700 font-bold">削除</button></li>`).join('') : '<li class="text-gray-400">まだ登録はありません</li>'}</ul>
+                                    </div>
+                                </details>
+                            </div>
+
+                            <div class="mt-5 pt-4 border-t border-amber-200">
+                                <div class="flex justify-between items-center mb-1">
+                                    <label for="land-intro-${i}" class="text-xs font-bold text-gray-700">土地紹介文 <span class="font-normal text-gray-400">(提案書の「土地紹介」ページに出ます。空なら「備考」を出します)</span></label>
+                                    <button onclick="app.makeLandIntro(${i})" class="${btn}"><i data-lucide="file-pen-line" class="w-4 h-4 text-amber-600"></i> 下書きを作る</button>
+                                </div>
+                                <textarea id="land-intro-${i}" rows="5" oninput="app.updateLandInfo(${i}, 'intro', this.value)" class="${inputCls}" placeholder="「下書きを作る」で、入力した土地情報から紹介文のたたき台を作れます。自由に直せます。">${esc(info.intro)}</textarea>
+                            </div>
+                        </div>`;
+            }
+            function refreshLandCheck(index) {
+                const out = document.getElementById(`land-check-out-${index}`);
+                if (out) out.innerHTML = landCheckOutHtml(index);
+                const city = document.getElementById(`land-check-city-${index}`);
+                if (city) { city.innerHTML = landCityButtonsHtml(index); if (window.lucide) lucide.createIcons(); }
+            }
+            function copyLandCheck(index) {
+                copyText(LandCheck.toText(state.landInfos[index] || emptyLand()), 'チェックシートを文章でコピーしました。チャットや社内メモに貼り付けられます');
+            }
+            function openLandLink(index, key, city) {
+                const addr = String(state.landInfos[index]?.address || '').trim();
+                if (key === 'gmap') {
+                    if (addr) copyText(addr, `所在地「${addr}」をコピーしました`);
+                    openGoogleMap(index, 'map');
+                    return;
+                }
+                let label, url;
+                if (key === 'city') {
+                    const l = getCityLinks()[city];
+                    if (!l) { showToast('登録した都市計画図のリンクが見つかりません', 'error'); return; }
+                    label = `${l.city}の都市計画図`; url = l.url;
+                } else {
+                    ({ label, url } = LAND_LINKS[key]);
+                }
+                // 先にコピー（このタブにフォーカスがあるうちに）→ 新しいタブで開く
+                if (addr) copyText(addr, `所在地「${addr}」をコピーしました。開いた${label}の検索欄に貼り付けてください`);
+                else showToast(`所在地が未入力のため、${label}のトップを開きます`, 'error');
+                const w = window.open(url, '_blank');
+                if (w) { try { w.opener = null; } catch (e) {} }
+                else showToast('ポップアップがブロックされました。ブラウザの設定で許可してください', 'error');
+            }
+            function addCityLink(index) {
+                const city = (document.getElementById(`land-city-name-${index}`)?.value || '').trim();
+                const url = (document.getElementById(`land-city-url-${index}`)?.value || '').trim();
+                if (!city) { showToast('市区町村名を入力してください', 'error'); return; }
+                if (!/^https?:\/\//i.test(url)) { showToast('URLは https:// から入力してください', 'error'); return; }
+                const list = getCityLinks().filter(l => l.city !== city);
+                list.push({ city, url });
+                if (!setCityLinks(list)) return;
+                renderLandInfos();
+                showToast(`「${city}」の都市計画図のリンクを登録しました`);
+            }
+            function removeCityLink(k) {
+                const list = getCityLinks();
+                const l = list.splice(k, 1)[0];
+                if (!l || !setCityLinks(list)) return;
+                renderLandInfos();
+                showToast(`「${l.city}」の都市計画図のリンクを削除しました`, 'info');
+            }
+            async function makeLandIntro(index) {
+                const L = state.landInfos[index];
+                if (!L) return;
+                const text = LandCheck.introDraft(L);
+                if (String(L.intro || '').trim()) {
+                    const ok = await askConfirm({ title: '土地紹介文の上書き', message: '入っている土地紹介文を、新しい下書きで置き換えますか？<br>（今の文は消えます）', okText: '上書きする' });
+                    if (!ok) return;
+                }
+                L.intro = text;
+                const ta = document.getElementById(`land-intro-${index}`);
+                if (ta) ta.value = text;
+                markDirty();
+                showToast('土地紹介文の下書きを入れました。お客様に合わせて直してください');
+            }
+
             function renderLandInfos() {
                 const wrapper = document.getElementById('land-info-wrapper');
                 const multi = state.landInfos.length > 1;
@@ -3882,11 +4259,22 @@
                             ${field('建築条件', makeSelect(CONDITION_OPTIONS, info.conditions, `app.updateLandInfo(${i}, 'conditions', this.value)`))}
                             ${field('容積率 (%)', `<div class="flex items-center gap-1"><input type="number" step="10" value="${parseInt(info.far) || ''}" oninput="app.updateLandPercent(${i}, 'far', this.value)" class="${inputCls}" placeholder="例: 80">${stepper(10)}</div>`)}
                             ${field('法令上の制限 <span class="font-normal text-gray-400">(候補から選択・自由入力可)</span>', text(i, 'restrictions', info.restrictions, '例: 北側斜線制限', 'dl-restrictions'), 'lg:col-span-4')}
+                            <div class="lg:col-span-4 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                                <p class="text-xs font-bold text-gray-700 mb-2">前面道路 <span class="font-normal text-gray-400">(土地チェックシートの計算に使います。提案書には出ません)</span></p>
+                                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+                                    ${field('道路の方位', makeSelect(LandCheck.ROAD_DIRS, info.roadDir, `app.updateLandInfo(${i}, 'roadDir', this.value)`))}
+                                    ${field('道路の幅 (m)', `<input type="number" step="0.1" min="0" value="${esc(info.roadWidth)}" oninput="app.updateLandInfo(${i}, 'roadWidth', this.value)" class="${inputCls}" placeholder="例: 4">`)}
+                                    ${field('間口＝道路に接する長さ (m)', `<input type="number" step="0.1" min="0" value="${esc(info.roadFrontage)}" oninput="app.updateLandInfo(${i}, 'roadFrontage', this.value)" class="${inputCls}" placeholder="例: 10">`)}
+                                    ${field('公道／私道', makeSelect(['公道', '私道'], info.roadType, `app.updateLandInfo(${i}, 'roadType', this.value)`))}
+                                    <label class="flex items-center gap-2 text-xs font-bold text-gray-700 pb-2"><input type="checkbox" ${info.cornerRelief ? 'checked' : ''} onchange="app.updateLandInfo(${i}, 'cornerRelief', this.checked)" class="w-4 h-4 accent-current"> 角地の緩和あり<span class="font-normal text-gray-400">(役所で確認済み)</span></label>
+                                </div>
+                            </div>
                             ${field('交通', text(i, 'traffic', info.traffic, '例: JR稲積公園駅 徒歩20分'), 'lg:col-span-2')}
                             ${field('学校区', text(i, 'school', info.school, '例: 新陵小学校 徒歩12分'), 'lg:col-span-2')}
                             ${field('近隣アクセス <span class="font-normal text-gray-400">(1行に「施設名：所要時間」。入力すると提案書に「近隣アクセス」ページが入ります)</span>', `<textarea rows="4" oninput="app.updateLandInfo(${i}, 'access', this.value)" class="${inputCls}" placeholder="当麻小学校：徒歩10分&#10;ホクレンショップ：徒歩7分&#10;当麻駅：車2分">${esc(info.access)}</textarea>`, 'lg:col-span-4')}
                             ${field('備考 (物件名など)', `<textarea rows="2" oninput="app.updateLandInfo(${i}, 'memo', this.value)" class="${inputCls} resize-none">${esc(info.memo)}</textarea>`, 'lg:col-span-4')}
                         </div>
+                        ${landCheckHtml(i)}
                         <div class="mt-8 pt-6 border-t border-gray-200">
                             <h4 class="font-bold text-gray-800 mb-2 flex items-center gap-2"><i data-lucide="upload-cloud" class="text-brand w-5 h-5"></i> 土地資料アップロード ＆ トリミング ＆ 描画</h4>
                             <p class="text-xs text-gray-500 mb-4">PDF（複数ページ対応）・画像を選択またはドラッグ＆ドロップ。「切抜」で余白カット、「描画」で図形や日照軌道などを書き込めます。</p>
@@ -6866,7 +7254,7 @@ ${example.replace(/\n}$/, ',\n  "プラン": "プラン名（例: ラクイエ�
                     ].filter(([, v]) => v);
                     const DUP_KEYS = ['所在地', '価格', '土地面積', '坪単価'];
                     const specList = (cols, skipDup = true) => `<dl class="grid ${cols} gap-x-[1.6em] leading-snug font-serif" style="${fz(11)}">${specs.filter(([k]) => !(skipDup && DUP_KEYS.includes(k))).map(([k, v]) => `<div class="flex gap-[0.8em] py-[0.5em] border-b border-gray-200 min-w-0"><dt class="w-[4.6em] shrink-0 text-gray-500 tracking-[0.1em]">${k}</dt><dd class="text-gray-900 min-w-0">${v}</dd></div>`).join('')}</dl>`;
-                    const memoHtml = esc(land.memo).replace(/\n/g, '<br>');
+                    const memoHtml = esc(String(land.intro || '').trim() ? land.intro : land.memo).replace(/\n/g, '<br>');
                     const infoBlock = (label, val) => `<div class="bg-gray-50 px-[0.8em] py-[0.6em]" style="border-top:2px solid var(--lf-green)"><p class="text-gray-500 tracking-[0.15em]" style="${fz(8.5)}">${label}</p><p class="lf-num text-gray-900 mt-[0.2em] whitespace-nowrap" style="${fz(13)}">${val || '—'}</p></div>`;
                     const headline = `
                         <p class="font-serif tracking-[0.12em] text-gray-900 leading-snug" style="${fz(15)}">${esc(land.address) || '—'}</p>
@@ -7751,7 +8139,7 @@ ${example.replace(/\n}$/, ',\n  "プラン": "プラン名（例: ラクイエ�
                     ].filter(([, v]) => v);
                     const DUP_KEYS = ['所在地', '価格', '土地面積'];
                     const specList = (cols, skipDup = true) => `<dl class="grid ${cols} gap-x-[1.6em] leading-snug font-serif" style="${fz(11)}">${specs.filter(([k]) => !(skipDup && DUP_KEYS.includes(k))).map(([k, v]) => `<div class="flex gap-[0.8em] py-[0.5em] border-b border-gray-200 min-w-0"><dt class="w-[4.6em] shrink-0 text-gray-500 tracking-[0.1em]">${k}</dt><dd class="text-gray-900 min-w-0">${v}</dd></div>`).join('')}</dl>`;
-                    const memoHtml = esc(land.memo).replace(/\n/g, '<br>');
+                    const memoHtml = esc(String(land.intro || '').trim() ? land.intro : land.memo).replace(/\n/g, '<br>');
                     const headline = `
                         <p class="font-serif tracking-[0.12em] text-gray-900 leading-snug" style="${fz(17)}">${esc(land.address) || '—'}</p>
                         <p class="font-serif tracking-[0.1em] text-gray-700 mt-[0.3em]" style="${fz(15)}"><span class="text-brand-dark font-semibold">${esc(land.price) || '—'}</span>　${areaTxt || ''}</p>
@@ -9053,6 +9441,7 @@ ${example.replace(/\n}$/, ',\n  "プラン": "プラン名（例: ラクイエ�
                 togglePageExclude, resetPageExclude, togglePrintSection, renderPrintSelect, printSelectGroup, printSelectAll, saveSnapshot, toggleSnapList, renderSnapList, openSnapshot, deleteSnapshot, backToLatestPreview,
                 showPreview, showForm, printPreview, setPaperSize, setDesign, changeTaste, toggleTaste, editTaste, setTasteComment, toggleTastePhoto, setTastePick, toggleTocPhoto, resetTocPick, updatePerf,
                 openGoogleMap, captureScreen, pasteImage,
+                copyLandCheck, openLandLink, addCityLink, removeCityLink, makeLandIntro,
                 updateRoom, addRoom, moveRoom, removeRoom, fillRoomExample, openRoomDrivePicker, openTastePicker, openTocPicker, closeRoomDrivePicker, roomPickerFilter, toggleRoomPick, applyRoomDrivePicker, removeRoomDrive, updateOptionItem, updateOptionNote, addOptionItem, removeOptionItem, addOptionPresets,
                 updateRobo, toggleRoboRoom, saveRoboUrl, copyRoboText, copyRoboAndOpen, toggleRoboText, addRoboLink, removeRoboLink, handleRoboFiles, handleRoboDrop,
                 setCaseLayout, setCaseAuto, toggleCaseTaste, setCaseAutoCount, reshuffleCases,
