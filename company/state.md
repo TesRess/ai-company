@@ -1,4 +1,4 @@
-phase: spec
+phase: spec_review
 product: land-checksheet
 review_round: 1
 
